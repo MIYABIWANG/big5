@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="zh-TW" class="h-full">
+ <head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <script src="https://cdn.tailwindcss.com/3.4.17"></script>
+  <script src="/_sdk/element_sdk.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/lucide@0.263.0/dist/umd/lucide.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;600;700&amp;family=JetBrains+Mono:wght@400;600&amp;display=swap" rel="stylesheet">
+  <style>
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  .result-card { animation: slideUp 0.25s ease-out; }
+  @keyframes slideUp {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .glow-ring:focus-within {
+    box-shadow: 0 0 0 3px rgba(99,200,170,0.35);
+  }
+</style>
+  <style>body { box-sizing: border-box; }</style>
+  <script src="/_sdk/data_sdk.js" type="text/javascript"></script>
+ </head>
+ <body class="h-full overflow-auto" style="font-family:'Noto Sans TC',sans-serif;">
+  <div id="app" class="h-full w-full flex flex-col" style="background:#1a1a2e;"><!-- Header -->
+   <div class="pt-6 pb-3 px-5 text-center">
+    <div class="inline-flex items-center gap-2 mb-1">
+     <div style="background:#63c8aa;width:8px;height:8px;border-radius:50%;"></div>
+     <h1 id="title" class="font-bold tracking-tight" style="color:#e0e0e0;font-size:20px;">Big5 編碼查詢</h1>
+    </div>
+    <p style="color:#7a7a9e;font-size:12px;">輸入中文字，即時顯示 Big5 編碼</p>
+   </div><!-- Input -->
+   <div class="px-5 pb-4">
+    <div class="glow-ring rounded-xl transition-all" style="background:#252547;border:1.5px solid #353560;"><input id="charInput" type="text" placeholder="輸入文字..." autocomplete="off" class="w-full bg-transparent outline-none px-4 py-3 text-lg" style="color:#f0f0f0;font-family:'Noto Sans TC',sans-serif;" oninput="lookup()">
+    </div>
+   </div><!-- Results -->
+   <div id="results" class="flex-1 overflow-auto px-5 pb-6 space-y-2"></div><!-- Empty state -->
+   <div id="empty" class="flex-1 flex items-center justify-center px-5">
+    <div class="text-center" style="color:#4a4a6e;"><i data-lucide="search" style="width:36px;height:36px;margin:0 auto 8px;display:block;"></i>
+     <p style="font-size:13px;">輸入文字開始查詢</p>
+    </div>
+   </div>
+  </div>
+  <script>
+// Big5 encoding table — we use a canvas-based encoding trick:
+// Big5 maps are huge, so we use a known mapping approach via manual lookup.
+// We'll build a lookup using the standard Big5 range.
+
+// Big5 encoding: Lead byte 0x81-0xFE, Trail byte 0x40-0x7E / 0xA1-0xFE
+// We create encoding by trying to match against a known Big5 table.
+// Since we can't use server-side iconv, we embed a conversion function.
+
+// Strategy: Use TextEncoder/Decoder aren't available for Big5 natively,
+// so we use a hidden iframe or a mapping. Best approach for client-side:
+// We'll use a Blob + FileReader trick or a known JS Big5 table.
+
+// Lightweight approach: we'll create a small utility that maps Unicode to Big5
+// using the standard mapping data embedded as a compressed lookup.
+
+// For practicality, we'll use the encoding API if available, or fall back.
+// Modern browsers support TextDecoder('big5') for DECODING but not encoding.
+// So we build a reverse map from Big5→Unicode using TextDecoder, then invert it.
+
+let unicodeToBig5 = null;
+
+async function buildBig5Map() {
+  const decoder = new TextDecoder('big5');
+  const map = new Map();
+
+  // Iterate all valid Big5 two-byte sequences
+  for (let lead = 0x81; lead <= 0xFE; lead++) {
+    // Trail: 0x40-0x7E, 0xA1-0xFE
+    const ranges = [[0x40, 0x7E], [0xA1, 0xFE]];
+    for (const [lo, hi] of ranges) {
+      const buf = new Uint8Array(256 * 2);
+      let count = 0;
+      const trails = [];
+      for (let trail = lo; trail <= hi; trail++) {
+        buf[count * 2] = lead;
+        buf[count * 2 + 1] = trail;
+        trails.push(trail);
+        count++;
+      }
+      const decoded = decoder.decode(buf.slice(0, count * 2));
+      for (let i = 0; i < decoded.length && i < count; i++) {
+        const ch = decoded[i];
+        if (ch !== '\uFFFD' && ch !== '\u0000') {
+          const big5Code = (lead << 8) | trails[i];
+          if (!map.has(ch)) {
+            map.set(ch, big5Code);
+          }
+        }
+      }
+    }
+  }
+  return map;
+}
+
+// Init map on load
+buildBig5Map().then(m => { 
+  unicodeToBig5 = m; 
+  lookup();
+}).catch(err => {
+  console.error('Big5 map build failed:', err);
+  unicodeToBig5 = new Map();
+  lookup();
+});
+
+function lookup() {
+  const input = document.getElementById('charInput').value;
+  const resultsEl = document.getElementById('results');
+  const emptyEl = document.getElementById('empty');
+
+  if (!input.trim()) {
+    resultsEl.innerHTML = '';
+    resultsEl.classList.add('hidden');
+    emptyEl.classList.remove('hidden');
+    return;
+  }
+
+  emptyEl.classList.add('hidden');
+  resultsEl.classList.remove('hidden');
+
+  const chars = [...input];
+  let html = '';
+
+  for (const ch of chars) {
+    const code = unicodeToBig5 ? unicodeToBig5.get(ch) : null;
+    const unicodeHex = ch.codePointAt(0).toString(16).toUpperCase().padStart(4, '0');
+
+    let big5Str, statusColor;
+    if (code) {
+      big5Str = code.toString(16).toUpperCase().padStart(4, '0');
+      statusColor = '#63c8aa';
+    } else if (ch.charCodeAt(0) < 0x80) {
+      // ASCII - pad to 4 chars
+      big5Str = ch.charCodeAt(0).toString(16).toUpperCase().padStart(4, '0');
+      statusColor = '#7ea8e0';
+    } else {
+      big5Str = '不支援';
+      statusColor = '#e07a7a';
+    }
+
+    html += `
+      <div class="result-card rounded-xl p-3 flex items-center gap-4" style="background:#252547;border:1px solid #353560;">
+        <div class="flex-shrink-0 w-12 h-12 rounded-lg flex items-center justify-center font-bold text-2xl" style="background:#1a1a2e;color:#f0f0f0;">
+          ${ch}
+        </div>
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-2 mb-1">
+            <span style="font-family:'JetBrains Mono',monospace;color:${statusColor};font-size:16px;font-weight:600;">
+              ${big5Str}
+            </span>
+            ${code || ch.charCodeAt(0) < 0x80 ? `<button onclick="copyText('${big5Str}')" class="p-1 rounded hover:opacity-70 transition" style="color:#7a7a9e;" title="複製"><i data-lucide="copy" style="width:14px;height:14px;"></i></button>` : ''}
+          </div>
+          <div style="color:#7a7a9e;font-size:11px;font-family:'JetBrains Mono',monospace;">
+            Unicode: U+${unicodeHex}
+          </div>
+        </div>
+      </div>`;
+  }
+
+  resultsEl.innerHTML = html;
+  lucide.createIcons();
+}
+
+function copyText(text) {
+  navigator.clipboard.writeText(text).catch(() => {});
+  // Brief visual feedback
+  event.currentTarget.style.color = '#63c8aa';
+  setTimeout(() => { event.currentTarget.style.color = '#7a7a9e'; }, 600);
+}
+
+// Element SDK
+const defaultConfig = {
+  app_title: 'Big5 編碼查詢',
+  background_color: '#1a1a2e',
+  surface_color: '#252547',
+  text_color: '#e0e0e0',
+  primary_action: '#63c8aa',
+  secondary_action: '#7a7a9e',
+  font_family: 'Noto Sans TC',
+  font_size: 16
+};
+
+window.elementSdk.init({
+  defaultConfig,
+  onConfigChange: async (config) => {
+    const bg = config.background_color || defaultConfig.background_color;
+    const surface = config.surface_color || defaultConfig.surface_color;
+    const text = config.text_color || defaultConfig.text_color;
+    const primary = config.primary_action || defaultConfig.primary_action;
+    const secondary = config.secondary_action || defaultConfig.secondary_action;
+    const font = config.font_family || defaultConfig.font_family;
+    const size = config.font_size || defaultConfig.font_size;
+
+    const app = document.getElementById('app');
+    app.style.background = bg;
+
+    const title = document.getElementById('title');
+    title.textContent = config.app_title || defaultConfig.app_title;
+    title.style.color = text;
+    title.style.fontFamily = `${font}, sans-serif`;
+    title.style.fontSize = `${size * 1.25}px`;
+
+    document.querySelector('.glow-ring').style.background = surface;
+    document.getElementById('charInput').style.fontFamily = `${font}, sans-serif`;
+
+    lookup();
+  },
+  mapToCapabilities: (config) => ({
+    recolorables: [
+      { get: () => config.background_color || defaultConfig.background_color, set: (v) => { config.background_color = v; window.elementSdk.setConfig({ background_color: v }); } },
+      { get: () => config.surface_color || defaultConfig.surface_color, set: (v) => { config.surface_color = v; window.elementSdk.setConfig({ surface_color: v }); } },
+      { get: () => config.text_color || defaultConfig.text_color, set: (v) => { config.text_color = v; window.elementSdk.setConfig({ text_color: v }); } },
+      { get: () => config.primary_action || defaultConfig.primary_action, set: (v) => { config.primary_action = v; window.elementSdk.setConfig({ primary_action: v }); } },
+      { get: () => config.secondary_action || defaultConfig.secondary_action, set: (v) => { config.secondary_action = v; window.elementSdk.setConfig({ secondary_action: v }); } },
+    ],
+    borderables: [],
+    fontEditable: { get: () => config.font_family || defaultConfig.font_family, set: (v) => { config.font_family = v; window.elementSdk.setConfig({ font_family: v }); } },
+    fontSizeable: { get: () => config.font_size || defaultConfig.font_size, set: (v) => { config.font_size = v; window.elementSdk.setConfig({ font_size: v }); } },
+  }),
+  mapToEditPanelValues: (config) => new Map([
+    ['app_title', config.app_title || defaultConfig.app_title],
+  ])
+});
+
+lucide.createIcons();
+</script>
+ <script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'9de3350740f3f24c',t:'MTc3MzgyNjEwNS4wMDAwMDA='};var a=document.createElement('script');a.nonce='';a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+</html>
