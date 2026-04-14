@@ -132,7 +132,7 @@ function lookup() {
     let big5Str, statusColor;
     if (code) {
       big5Str = code.toString(16).toUpperCase().padStart(4, '0');
-      statusColor = '#63c8aa';
+      statusColor = '#ffffff';
     } else if (ch.charCodeAt(0) < 0x80) {
       // ASCII - pad to 4 chars
       big5Str = ch.charCodeAt(0).toString(16).toUpperCase().padStart(4, '0');
